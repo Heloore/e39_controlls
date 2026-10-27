@@ -741,7 +741,25 @@ bool handleRawTxCommand(const char *hexBytes, IbusBus &bus) {
 bool handleSeatCommand(const char *arguments) {
   if (strcmp(arguments, "stop") == 0) {
     seatRepeater.stop();
+    gmJobScanner.stop();
     Serial.println("SEAT: stopped");
+    return true;
+  }
+
+  unsigned int scanFrom = 0, scanTo = 0;
+  if (sscanf(arguments, "pscan %x %x", &scanFrom, &scanTo) == 2) {
+    if (!ibusTxEnabled || scanFrom > scanTo || scanTo > 0xFF) {
+      Serial.println("SEAT: 'seat pscan <from> <to>' in hex, needs 'tx on'");
+      return true;
+    }
+    gmScanBus = &kbus;
+    gmScanFixedJob = SEAT_JOB;
+    memset(gmScanReplies, 0, sizeof(gmScanReplies));
+    memset(gmScanSent, 0, sizeof(gmScanSent));
+    gmScanSummaryPending = true;
+    gmJobScanner.start(scanFrom, scanTo, millis(), false, SEAT_SCAN_STEP_MS);
+    Serial.printf("SEAT: job %02X, params %02X-%02X, one every %u ms, 'seat stop' to abort\n",
+                  SEAT_JOB, scanFrom, scanTo, (unsigned)SEAT_SCAN_STEP_MS);
     return true;
   }
 

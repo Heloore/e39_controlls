@@ -11,6 +11,7 @@ constexpr uint8_t SEAT_JOB = 0x15;
 constexpr uint8_t SEAT_NO_MOVE = 0xFF;
 constexpr uint32_t SEAT_PULSE_MS = 1100;
 constexpr uint8_t SEAT_MAX_PULSES = 20;
+constexpr uint32_t SEAT_SCAN_STEP_MS = 1500;
 
 struct SeatMove {
   const char *name;
