@@ -12,6 +12,7 @@ class IbusBus {
 public:
   using FrameHandler = void (*)(const uint8_t *frame, uint8_t length);
 
+  void setName(const char *busName) { name = busName; }
   void setRejectedFrameHandler(FrameHandler onRejectedFrame) { rejectedFrameHandler = onRejectedFrame; }
 
   void begin(HardwareSerial &uartSerial,
@@ -42,6 +43,7 @@ private:
   static constexpr uint32_t RETRY_BACKOFF_MIN_MS = 5;
   static constexpr uint32_t RETRY_BACKOFF_MAX_MS = 25;
 
+  const char *name = "IBUS";
   HardwareSerial *uart = nullptr;
   FrameHandler frameHandler = nullptr;
   FrameHandler rejectedFrameHandler = nullptr;

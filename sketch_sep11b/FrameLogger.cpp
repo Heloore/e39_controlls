@@ -31,6 +31,9 @@ void FrameLogger::handleCommand(const char *line, uint32_t nowMs) {
   } else if (line[0] == 'a' && line[1] == '\0') {
     mode = Mode::ShowAll;
     output->println("LOG: showing all frames");
+  } else if (line[0] == 'q' && line[1] == '\0') {
+    mode = Mode::Quiet;
+    output->println("LOG: quiet, frames hidden ('a' shows them again)");
   } else if (extraCommandHandler && extraCommandHandler(line)) {
     return;
   } else {
@@ -38,32 +41,36 @@ void FrameLogger::handleCommand(const char *line, uint32_t nowMs) {
   }
 }
 
-void FrameLogger::logFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs) {
+void FrameLogger::logFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs, const char *busLabel) {
   finishBaselineIfElapsed(nowMs);
 
-  uint32_t signature = FrameSignatureSet::signatureOf(frame, length);
+  // Same frame kind on the other bus must not count as already seen.
+  uint32_t signature = FrameSignatureSet::signatureOf(frame, length) | ((uint32_t)busLabel[0] << 24);
 
   switch (mode) {
     case Mode::ShowAll:
-      printFrame(frame, length, nowMs);
+      printFrame(frame, length, nowMs, busLabel);
       break;
 
     case Mode::LearnBaseline:
       baseline.add(signature);
       break;
 
+    case Mode::Quiet:
+      break;
+
     case Mode::ShowNew:
       if (!baseline.contains(signature)) {
-        printFrame(frame, length, nowMs);
+        printFrame(frame, length, nowMs, busLabel);
       }
       break;
   }
 }
 
-void FrameLogger::logRejectedFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs) {
+void FrameLogger::logRejectedFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs, const char *busLabel) {
   if (mode != Mode::ShowAll) return;
 
-  output->printf("[%lu] IBUS BAD:", (unsigned long)nowMs);
+  output->printf("[%lu] %s BAD:", (unsigned long)nowMs, busLabel);
   for (uint8_t i = 0; i < length; i++) {
     output->printf(" %02X", frame[i]);
   }
@@ -86,8 +93,8 @@ void FrameLogger::finishBaselineIfElapsed(uint32_t nowMs) {
                  baseline.size());
 }
 
-void FrameLogger::printFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs) {
-  output->printf("[%lu] IBUS RX:", (unsigned long)nowMs);
+void FrameLogger::printFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs, const char *busLabel) {
+  output->printf("[%lu] %s RX:", (unsigned long)nowMs, busLabel);
   for (uint8_t i = 0; i < length; i++) {
     output->printf(" %02X", frame[i]);
   }
@@ -95,5 +102,5 @@ void FrameLogger::printFrame(const uint8_t *frame, uint8_t length, uint32_t nowM
 }
 
 void FrameLogger::printHelp() {
-  output->println("LOG commands: 'm <label>' mark, 'b' learn baseline 60 s, 'a' show all");
+  output->println("LOG commands: 'm <label>' mark, 'b' learn baseline 60 s, 'a' show all, 'q' quiet");
 }

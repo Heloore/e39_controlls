@@ -8,6 +8,7 @@
 //   m <label>  insert a MARK line (e.g. "m unlock")
 //   b          learn a 60 s baseline, then print only frame kinds not seen in it
 //   a          print all frames
+//   q          quiet: no frames, only marks and sketch messages
 //   ?          help
 class FrameLogger {
 public:
@@ -17,13 +18,13 @@ public:
   void begin(Print &logOutput);
   void setExtraCommandHandler(ExtraCommandHandler handler) { extraCommandHandler = handler; }
   void pollSerial(Stream &input, uint32_t nowMs);
-  void logFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs);
+  void logFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs, const char *busLabel = "IBUS");
   // Frames dropped for a bad checksum; printed only in "show all" mode.
-  void logRejectedFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs);
+  void logRejectedFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs, const char *busLabel = "IBUS");
   void handleCommand(const char *line, uint32_t nowMs);
 
 private:
-  enum class Mode { ShowAll, LearnBaseline, ShowNew };
+  enum class Mode { ShowAll, LearnBaseline, ShowNew, Quiet };
 
   static constexpr uint32_t BASELINE_DURATION_MS = 60000;
   static constexpr uint8_t COMMAND_BUFFER_SIZE = 48;
@@ -39,6 +40,6 @@ private:
 
   void startBaseline(uint32_t nowMs);
   void finishBaselineIfElapsed(uint32_t nowMs);
-  void printFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs);
+  void printFrame(const uint8_t *frame, uint8_t length, uint32_t nowMs, const char *busLabel);
   void printHelp();
 };

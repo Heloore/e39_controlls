@@ -68,7 +68,7 @@ void IbusBus::trySendPending() {
 
   pendingAttempts++;
   if (pendingAttempts >= MAX_SEND_ATTEMPTS) {
-    Serial.println(">> IBUS [TX]: dropped frame after collisions");
+    Serial.printf(">> %s [TX]: dropped frame after collisions\n", name);
     pendingLength = 0;
     return;
   }
@@ -80,14 +80,14 @@ bool IbusBus::transmitPendingFrame() {
   for (uint8_t i = 0; i < pendingLength; i++) {
     uart->write(pendingFrame[i]);
     if (!waitForEcho(pendingFrame[i])) {
-      Serial.println(">> IBUS [TX]: collision detected");
+      Serial.printf(">> %s [TX]: collision detected\n", name);
       return false;
     }
   }
   lastActivityUs = micros();
 
   if (pendingLogWhenSent) {
-    Serial.print("IBUS TX:");
+    Serial.printf("%s TX:", name);
     for (uint8_t i = 0; i < pendingLength; i++) {
       Serial.printf(" %02X", pendingFrame[i]);
     }

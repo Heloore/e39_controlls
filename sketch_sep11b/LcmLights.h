@@ -44,13 +44,34 @@ inline bool lcmLightModeFromName(const char *name, LcmLightMode &mode) {
   return false;
 }
 
-// Builds the long "set IO" frame (to 0xD0) with a single bit set in one of the
-// eight data bytes after 0x0C, to find out which lamp each bit controls.
-inline uint8_t lcmBuildScanPayload(uint8_t dataByteIndex, uint8_t bitMask, uint8_t *outPayload) {
-  const LcmLightCommand &base = lcmLightCommand(LcmLightMode::Off);
-  memcpy(outPayload, base.payload, base.payloadLength);
+// Long "set IO" frame for LCM_IV (diagnostic index 0x14), layout from BlueBus:
+// 0C 00 00 <blinker> 00 00 <parkL|high> <parkR|tailL> <tailR> 00 <dimmer> <loadRear> 00
+// Sets one bit in the data byte after 0C (0..11, not the dimmer/load bytes 9 and 10)
+// to find out which lamp each bit controls.
+constexpr uint8_t LCM_IO_PAYLOAD_LENGTH = 13;
+constexpr uint8_t LCM_IO_DIMMER_INDEX = 9;
+constexpr uint8_t LCM_IO_LOAD_REAR_INDEX = 10;
+constexpr uint8_t LCM_IO_LAST_DATA_INDEX = 11;
+
+inline bool lcmIsScannableDataByte(uint8_t dataByteIndex) {
+  return dataByteIndex <= LCM_IO_LAST_DATA_INDEX &&
+         dataByteIndex != LCM_IO_DIMMER_INDEX && dataByteIndex != LCM_IO_LOAD_REAR_INDEX;
+}
+
+inline uint8_t lcmBuildScanPayload(uint8_t dataByteIndex, uint8_t bitMask,
+                                   uint8_t dimmerVoltage, uint8_t loadRearVoltage, uint8_t *outPayload) {
+  memset(outPayload, 0, LCM_IO_PAYLOAD_LENGTH);
+  outPayload[0] = 0x0C;
+  outPayload[1 + LCM_IO_DIMMER_INDEX] = dimmerVoltage;
+  outPayload[1 + LCM_IO_LOAD_REAR_INDEX] = loadRearVoltage;
   outPayload[1 + dataByteIndex] = bitMask;
-  return base.payloadLength;
+  return LCM_IO_PAYLOAD_LENGTH;
+}
+
+// LCM answer to "3F 03 D0 0B": D0 23 3F A0 ..., dimmer at frame[19], rear load at frame[20].
+constexpr uint8_t LCM_IO_STATUS_FRAME_LENGTH = 0x23;
+inline bool isLcmIoStatusFrame(const uint8_t *frame, uint8_t length) {
+  return length >= 21 && frame[0] == 0xD0 && frame[1] == LCM_IO_STATUS_FRAME_LENGTH && frame[2] == DIAGNOSTIC_ADDRESS;
 }
 
 // Steps through the 8 bits of one data byte, one every STEP_MS.
