@@ -7,6 +7,8 @@
 #include "SeatControl.h"
 #include "CentralLocking.h"
 #include "LowBeamHold.h"
+#include "LightControl.h"
+#include "Settings.h"
 #include "CarGauges.h"
 #include "HeaderGauges.h"
 #include "RadioScreenText.h"
@@ -55,6 +57,7 @@ char trackArtist[64] = "";
 
 bool trackDisplayEnabled = true; // serial "track off" disables
 bool radioShowsAux = false;
+bool gtMenuOpen = false; // GT shows its own menu: no header gauges, no title text
 TitleMarquee trackMarquee;
 volatile bool audioPlaying = false;
 volatile uint32_t audioStateChangedMs = 0;
@@ -73,16 +76,22 @@ bool reverseGearActive = false;
 bool doorsLocked = false; // from the GM door status frame
 bool doorsLockedByCar = false; // locked while the ignition was on (auto-lock), not by the fob
 bool unlockOnIgnitionOff = true;
+bool unlockAnyLock = false;
+bool doorsStateKnown = false; // a GM door status frame has been seen
+Settings settings;
+ManualLamps manualLamps;
+bool lampsWereActive = false;
 uint8_t unlockJob = CENTRAL_LOCK_BUTTON_JOB; // serial "unlockjob <hex>" to try others
 bool lowBeamAfterIgnitionOff = true;
 LowBeamHold lowBeamHold;
 CarGauges carGauges;
 SeatPulseRepeater seatRepeater;
-bool headerGaugesEnabled = false;  // serial "hdr on"
+bool headerGaugesEnabled = true;  // serial "hdr off" to disable
 HeaderZone headerZones[HEADER_ZONE_COUNT] = {
-  {1, 3, HeaderGauge::Speed},
-  {5, 6, HeaderGauge::Coolant},
-  {6, 6, HeaderGauge::Ambient},
+  {1, 4, HeaderGauge::Coolant},
+  {5, 6, HeaderGauge::Rpm},
+  {6, 6, HeaderGauge::Speed},
+  {0x42, 4, HeaderGauge::Ambient}, // replaces the radio's "P1" label
 };
 char headerZoneLastText[HEADER_ZONE_COUNT][HEADER_TEXT_MAX_LENGTH] = {};
 uint32_t headerZoneLastSentMs[HEADER_ZONE_COUNT] = {};
@@ -91,6 +100,8 @@ uint32_t obcScanNextMs = 0;
 bool carStreamEnabled = false;
 uint32_t lastCarStreamMs = 0;
 bool lowBeamTerminatePending = false;
+uint32_t lastManualLampSendMs = 0;
+bool lampsForceSend = false; // the web page changed the lamps: send now, not at the next refresh
 constexpr uint32_t HEADER_REFRESH_MS = 5000;     // re-send unchanged header text this often
 constexpr uint32_t HEADER_MIN_INTERVAL_MS = 1000;  // at most one update per zone per second
 constexpr uint8_t IGNITION_ACC = 0x01;
@@ -103,7 +114,8 @@ int currentRampVolume = 100;
 unsigned long lastVolumeStepTime = 0;
 
 const unsigned long VOLUME_STEP_INTERVAL = 25; // мс
-const int ATTENUATION_PERCENT = 30;
+int attenuationPercent = 30;
+bool reverseDuckingEnabled = true;
 
 unsigned long lastPlayPauseTime = 0;
 
@@ -142,6 +154,10 @@ bool handleRawTxCommand(const char *hexBytes, IbusBus &bus);
 bool handleScreenTextTestCommand(const char *text);
 bool handleSeatCommand(const char *arguments);
 bool handleGtTextCommand(const char *arguments);
+void applySettings();
+void webControlBegin();
+void updateWebControl();
+bool handleWifiCommand(const char *arguments);
 
 // ============================================================
 // SETUP
@@ -208,6 +224,9 @@ void setup() {
   // I-BUS UART (RX normal, TX inverted for 2N7000)
   // ==========================================================
 
+  settingsLoad(settings);
+  applySettings();
+
   frameLogger.begin(Serial);
   frameLogger.setExtraCommandHandler(handleTxTestCommand);
   ibus.setRejectedFrameHandler(onRejectedIbusFrame);
@@ -221,6 +240,8 @@ void setup() {
   Serial.println("I-BUS RX = GPIO16, TX = GPIO17 (inverted)");
   Serial.println("K-BUS RX = GPIO18 (receive only), TX = GPIO19 unused");
   Serial.println();
+  webControlBegin();
+
   Serial.println("System ready.");
 }
 
@@ -247,6 +268,7 @@ void loop() {
   updateObcScan();
   updateHeaderGauges();
   updateTrackText();
+  updateWebControl();
 }
 
 // ============================================================
@@ -254,7 +276,7 @@ void loop() {
 // ============================================================
 
 void updateAudioVolume() {
-  bool shouldReduce = reverseGearActive;
+  bool shouldReduce = reverseGearActive && reverseDuckingEnabled;
   Serial.printf(">> AUDIO: reverse=%d connected=%d volume=%d reduced=%d\n", shouldReduce,
                 a2dp_sink.is_connected(), a2dp_sink.get_volume(), volumeReducedForReverse);
 
@@ -288,7 +310,7 @@ void updateVolumeRamp() {
   lastVolumeStepTime = millis();
 
   int targetVolume = volumeReducedForReverse
-      ? normalVolume * (100 - ATTENUATION_PERCENT) / 100
+      ? normalVolume * (100 - attenuationPercent) / 100
       : normalVolume;
 
   if (currentRampVolume < targetVolume) {
@@ -469,9 +491,12 @@ void handleScreenOrButtonCommand(const uint8_t *frame, uint8_t length) {
   if (length < 5) return;
 
   bool menuButtonPressed = frame[0] == 0xF0 && frame[3] == 0x48 && frame[4] == 0x34;
-  bool screenShowsMenu = frame[0] == 0x3B && frame[2] == RADIO_ADDRESS && frame[3] == 0x45 && (frame[4] & 0x80) != 0;
+  bool screenModeFrame = frame[0] == 0x3B && frame[2] == RADIO_ADDRESS && frame[3] == 0x45;
+  bool screenShowsMenu = screenModeFrame && (frame[4] & 0x80) != 0;
+  if (screenModeFrame && !screenShowsMenu) gtMenuOpen = false;
   if (!menuButtonPressed && !screenShowsMenu) return;
 
+  gtMenuOpen = true;
   radioShowsAux = false;
   ourTextOnScreen = false;
   trackTextPending = false;
@@ -481,6 +506,7 @@ void handleGmCommand(const uint8_t *frame, uint8_t length) {
   if (length < 6 || frame[2] != 0xBF || frame[3] != GM_DOOR_STATUS_COMMAND) return;
   bool wasLocked = doorsLocked;
   doorsLocked = areDoorsLocked(frame[4]);
+  doorsStateKnown = true;
   if (!doorsLocked) {
     doorsLockedByCar = false;
   } else if (!wasLocked) {
@@ -499,7 +525,7 @@ void handleIgnitionStatus(uint8_t newStatus) {
   if (newStatus != 0x00 && lowBeamHold.isActive()) {
     stopLowBeamHold();
   }
-  if (engineJustStopped && unlockOnIgnitionOff && doorsLocked && doorsLockedByCar) {
+  if (engineJustStopped && unlockOnIgnitionOff && doorsLocked && (doorsLockedByCar || unlockAnyLock)) {
     const uint8_t unlockPayload[] = {GM_SET_IO_COMMAND, GM_SUB_MODULE, unlockJob, 0x01};
     bool queued = ibus.queueFrame(DIAGNOSTIC_ADDRESS, GM_ADDRESS, unlockPayload, sizeof(unlockPayload));
     Serial.println(queued ? ">> LOCKS: unlocking, car locked the doors and the ignition left ON" : ">> LOCKS: unlock not queued, bus busy");
@@ -559,6 +585,10 @@ bool handleTxTestCommand(const char *line) {
   if (sscanf(line, "obc %x", &obcField) == 1 && obcField <= 0xFF) {
     requestObcField(obcField);
     return true;
+  }
+
+  if (strncmp(line, "wifi", 4) == 0) {
+    return handleWifiCommand(line + 4);
   }
 
   if (strcmp(line, "car") == 0) {
@@ -800,31 +830,31 @@ bool handleHeaderGaugeCommand(const char *arguments) {
     headerGaugesEnabled = strcmp(arguments, "on") == 0;
     memset(headerZoneLastSentMs, 0, sizeof(headerZoneLastSentMs));
     memset(headerZoneLastText, 0, sizeof(headerZoneLastText));
-    Serial.println(headerGaugesEnabled ? "HDR: header gauges on (only while the radio shows AUX)" : "HDR: header gauges off");
+    Serial.println(headerGaugesEnabled ? "HDR: header gauges on (paused while the GT menu is open)" : "HDR: header gauges off");
     return true;
   }
 
   unsigned int zone = 0;
   char gaugeName[12] = "";
-  if (sscanf(arguments, "%u %11s", &zone, gaugeName) == 2) {
+  if (sscanf(arguments, "%x %11s", &zone, gaugeName) == 2) {
     HeaderGauge gauge;
     for (HeaderZone &headerZone : headerZones) {
       if (headerZone.zone == zone && headerGaugeFromName(gaugeName, gauge)) {
         headerZone.gauge = gauge;
         memset(headerZoneLastText, 0, sizeof(headerZoneLastText));
-        Serial.printf("HDR: zone %u -> %s\n", zone, gaugeName);
+        Serial.printf("HDR: zone %X -> %s\n", zone, gaugeName);
         return true;
       }
     }
   }
-  Serial.println("HDR: 'hdr on|off' or 'hdr <1|5|6> <speed|rpm|coolant|ambient|off>'");
+  Serial.println("HDR: 'hdr on|off' or 'hdr <1|5|6|42> <speed|rpm|coolant|ambient|off>' (zone in hex)");
   return true;
 }
 
 // One zone per pass; re-sent every few seconds in case the radio redraws the header.
 void updateHeaderGauges() {
   static uint8_t nextZoneIndex = 0;
-  if (!headerGaugesEnabled || !radioShowsAux) return;
+  if (!headerGaugesEnabled || gtMenuOpen) return;
 
   uint32_t nowMs = millis();
   uint8_t index = nextZoneIndex;
@@ -852,7 +882,10 @@ void updateHeaderGauges() {
 // Navigation screen text tests, sent as the radio (68 -> 3B), like BlueBus does:
 //   gt zone <hex> <text>   A5 62 01 <zone> text    (cursor-style zone write, radio uses 41-46 and 07)
 //   gt idx <hex> <text>    21 60 00 <index> text   (menu line, no cursor)
-//   gt upd <hex>           A5 <type> 01 00         (refresh; BlueBus types: 60 index, 62 zone)
+//   gt tmc <hex> <text>    21 61 00 <index> text   (menu line the way BlueBus writes it on Mk3/Mk4 nav GTs)
+//   gt title <text>        21 62 01 40 text        (list title, 9 chars; TMC items are indexes 41, 42, ...)
+//   gt static <hex> <text> A5 63 01 <index> text   (BlueBus's static Mk4 dashboard)
+//   gt upd <hex>           A5 <type> 01 00         (refresh; BlueBus types: 60 index, 61 tmc, 62 zone, 63 static)
 bool handleGtTextCommand(const char *arguments) {
   if (!ibusTxEnabled) {
     Serial.println("GT: send 'tx on' first");
@@ -870,12 +903,22 @@ bool handleGtTextCommand(const char *arguments) {
   } else if (sscanf(arguments, "idx %x %23[^\n]", &number, text) >= 1 && strncmp(arguments, "idx", 3) == 0) {
     payload[0] = 0x21; payload[1] = 0x60; payload[2] = 0x00; payload[3] = number;
     payloadLength = 4;
+  } else if (sscanf(arguments, "tmc %x %23[^\n]", &number, text) >= 1 && strncmp(arguments, "tmc", 3) == 0) {
+    payload[0] = 0x21; payload[1] = 0x61; payload[2] = 0x00; payload[3] = number;
+    payloadLength = 4;
+  } else if (sscanf(arguments, "static %x %23[^\n]", &number, text) >= 1 && strncmp(arguments, "static", 6) == 0) {
+    payload[0] = 0xA5; payload[1] = 0x63; payload[2] = 0x01; payload[3] = number;
+    payloadLength = 4;
+  } else if (strncmp(arguments, "title ", 6) == 0) {
+    strncpy(text, arguments + 6, sizeof(text) - 1);
+    payload[0] = 0x21; payload[1] = 0x62; payload[2] = 0x01; payload[3] = 0x40;
+    payloadLength = 4;
   } else if (sscanf(arguments, "upd %x", &number) == 1 && strncmp(arguments, "upd", 3) == 0) {
     payload[0] = 0xA5; payload[1] = number; payload[2] = 0x01; payload[3] = 0x00;
     Serial.println(ibus.queueFrame(RADIO_ADDRESS, SCREEN_ADDRESS, payload, 4) ? "GT: update sent" : "GT: busy");
     return true;
   } else {
-    Serial.println("GT: 'gt zone <hex> <text>', 'gt idx <hex> <text>', 'gt upd <hex>'");
+    Serial.println("GT: 'gt zone|idx|tmc|static <hex> <text>', 'gt upd <hex>'");
     return true;
   }
 
@@ -950,11 +993,23 @@ void stopLowBeamHold() {
   Serial.println(">> LIGHTS: low beams hold stopped");
 }
 
+// One light job for everything that needs lamps: the low-beam hold and the lamps switched on by hand.
+// The LCM drops the job after a few seconds, so it is sent again every few seconds until nothing is wanted.
 void updateLowBeamHold() {
   uint32_t nowMs = millis();
 
   if (lowBeamHold.isExpired(nowMs)) {
     stopLowBeamHold();
+  }
+  if (manualLamps.isExpired(nowMs)) {
+    manualLamps.clear();
+    Serial.println(">> LIGHTS: manual lamps timed out");
+  }
+
+  bool lampsWanted = lowBeamHold.isActive() || manualLamps.any();
+  if (lampsWereActive && !lampsWanted) {
+    lampsWereActive = false;
+    lowBeamTerminatePending = true;
   }
 
   if (lowBeamTerminatePending) {
@@ -971,13 +1026,21 @@ void updateLowBeamHold() {
     return;
   }
 
-  if (!lowBeamHold.isRefreshDue(nowMs)) return;
+  if (!lampsWanted) return;
+  bool refreshDue = lowBeamHold.isActive() ? lowBeamHold.isRefreshDue(nowMs) : (nowMs - lastManualLampSendMs >= LowBeamHold::REFRESH_MS);
+  if (!refreshDue && !lampsForceSend) return;
+
+  uint8_t dataBytes[LAMP_DATA_BYTES] = {};
+  if (lowBeamHold.isActive()) dataBytes[LOW_BEAM_DATA_BYTE_INDEX] |= LOW_BEAM_BOTH_MASK;
+  manualLamps.addTo(dataBytes);
 
   uint8_t payload[IBUS_MAX_PAYLOAD];
-  uint8_t payloadLength = lcmBuildScanPayload(LOW_BEAM_DATA_BYTE_INDEX, LOW_BEAM_BOTH_MASK,
-                                              lcmDimmerVoltage, lcmLoadRearVoltage, payload);
+  uint8_t payloadLength = lcmBuildLampPayload(dataBytes, lcmDimmerVoltage, lcmLoadRearVoltage, payload);
   if (ibus.queueFrame(DIAGNOSTIC_ADDRESS, 0xD0, payload, payloadLength, false)) {
-    lowBeamHold.markRefreshed(nowMs);
+    lampsWereActive = true;
+    lampsForceSend = false;
+    lastManualLampSendMs = nowMs;
+    if (lowBeamHold.isActive()) lowBeamHold.markRefreshed(nowMs);
   }
 }
 
@@ -1084,6 +1147,9 @@ void handleRadioCommand(const uint8_t *frame, uint8_t length) {
   if (!isRadioMainTextFrame(frame, length)) return;
 
   radioShowsAux = isAuxMainText(frame, length);
+  gtMenuOpen = false;
+  memset(headerZoneLastSentMs, 0, sizeof(headerZoneLastSentMs)); // the radio redraws its header, so draw ours again
+  memset(headerZoneLastText, 0, sizeof(headerZoneLastText));
   ourTextOnScreen = false; // the radio just drew its own text
   if (radioShowsAux) scheduleTrackText();
 }

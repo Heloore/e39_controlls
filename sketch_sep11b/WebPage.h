@@ -1,0 +1,109 @@
+#pragma once
+
+#include <pgmspace.h>
+
+// The single page served by the ESP32 (Control, Monitor, Settings tabs). Plain HTML, CSS and JS, no libraries.
+const char WEB_PAGE[] PROGMEM = R"HTML(<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>E39 Controls</title>
+<style>
+:root{--bg:#0f1318;--card:#171d25;--line:#252d38;--text:#e8edf3;--dim:#8794a3;--accent:#3d8bff;--ok:#33c27f;--warn:#e5a23a;--bad:#e5534b}
+@media(prefers-color-scheme:light){:root{--bg:#f1f4f8;--card:#fff;--line:#dbe2ea;--text:#18212b;--dim:#5d6b7a;--accent:#1d6fe8}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px system-ui,sans-serif}
+header{padding:14px 16px 8px}h1{margin:0 0 8px;font-size:20px}
+.pills{display:flex;gap:6px;flex-wrap:wrap}.pill{background:var(--card);border:1px solid var(--line);border-radius:99px;padding:3px 10px;font-size:13px;color:var(--dim)}
+.pill.on{color:var(--text);border-color:var(--accent)}.pill.warn{color:var(--warn);border-color:var(--warn)}
+nav{display:flex;gap:4px;padding:6px 16px;position:sticky;top:0;background:var(--bg);z-index:2}
+nav button{flex:1;padding:10px;border:1px solid var(--line);background:var(--card);color:var(--dim);border-radius:10px;font-size:15px}
+nav button.on{color:var(--text);border-color:var(--accent)}
+main{padding:8px 16px 90px;max-width:640px;margin:auto}section{display:none}section.on{display:block}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:10px 0}
+.card h2{margin:0 0 10px;font-size:15px;color:var(--dim);font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1;min-width:120px}
+button.act{padding:13px 10px;border:1px solid var(--line);background:transparent;color:var(--text);border-radius:10px;font-size:15px}
+button.act:active,button.act.held{background:var(--accent);border-color:var(--accent);color:#fff}
+button.stop{background:var(--bad);border-color:var(--bad);color:#fff;font-weight:600}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.lamp{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:14px}
+.lamp.on{border-color:var(--warn);background:rgba(229,162,58,.12)}
+.tiles{display:grid;grid-template-columns:1fr 1fr;gap:8px}.tile{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px}
+.tile b{display:block;font-size:26px;margin-top:4px}.tile span{color:var(--dim);font-size:13px}
+.set{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--line)}
+.set:first-of-type{border-top:0}.set small{display:block;color:var(--dim);font-size:12px;margin-top:2px}
+.set.soon{opacity:.45}
+select,input[type=number]{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px;font-size:15px;max-width:120px}
+.sw{appearance:none;width:46px;height:26px;border-radius:99px;background:var(--line);position:relative;flex:none}
+.sw:checked{background:var(--accent)}.sw:before{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:.15s}
+.sw:checked:before{left:23px}
+#toast{position:fixed;left:16px;right:16px;bottom:16px;max-width:608px;margin:auto;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;opacity:0;transition:.2s;pointer-events:none}
+#toast.show{opacity:1}
+</style></head><body>
+<header><h1>E39 Controls</h1><div class="pills" id="pills"></div></header>
+<nav id="tabs"><button data-t="control" class="on">Control</button><button data-t="monitor">Monitor</button><button data-t="settings">Settings</button></nav>
+<main>
+<section id="control" class="on">
+<div class="card"><h2>Doors</h2><div class="row"><button class="act" id="lockBtn">Lock</button><button class="act" id="unlockBtn">Unlock</button></div></div>
+<div class="card"><h2>Driver seat (hold to move)</h2><div class="grid" id="seat"></div></div>
+<div class="card"><h2>Lights</h2>
+<div class="row" style="margin-bottom:10px"><button class="act" id="allOn">All on</button><button class="act" id="allOff">All off</button></div>
+<div class="grid" id="lamps"></div><p style="color:var(--dim);font-size:12px;margin:10px 0 0" id="lampNote">Lamps switch off by themselves after 2 minutes.</p></div>
+<div class="card"><button class="act stop" style="width:100%" id="stopAll">Stop everything</button></div>
+</section>
+<section id="monitor"><div class="tiles" id="tiles"></div></section>
+<section id="settings">
+<div class="card"><h2>Doors</h2>
+<div class="set"><div>Unlock when the engine stops<small>Doors unlock when the ignition leaves ON</small></div><input type="checkbox" class="sw" data-k="unlock"></div>
+<div class="set"><div>Also unlock if I locked them<small>Off: only when the car auto-locked while driving</small></div><input type="checkbox" class="sw" data-k="unlockAny"></div></div>
+<div class="card"><h2>Lights</h2>
+<div class="set"><div>Follow-me-home<small>Low beams stay on after the ignition is off</small></div><input type="checkbox" class="sw" data-k="lowbeam"></div>
+<div class="set"><div>Follow-me-home time (s)</div><input type="number" min="10" max="300" data-k="lbSec"></div>
+<div class="set soon"><div>Welcome lights<small>Coming soon</small></div><input type="checkbox" class="sw" data-k="welcome" disabled></div>
+<div class="set soon"><div>Goodbye lights<small>Coming soon</small></div><input type="checkbox" class="sw" data-k="goodbye" disabled></div></div>
+<div class="card"><h2>Navigation screen</h2>
+<div class="set"><div>Track name instead of AUX</div><input type="checkbox" class="sw" data-k="track"></div>
+<div class="set"><div>Scroll step (ms)<small>Lower is faster</small></div><input type="number" min="150" max="1000" step="50" data-k="scrollMs"></div>
+<div class="set"><div>Gauges in the header</div><input type="checkbox" class="sw" data-k="hdr"></div>
+<div class="set"><div>Top right (under P1)</div><select data-k="zone0" class="gsel"></select></div>
+<div class="set"><div>Top middle</div><select data-k="zone1" class="gsel"></select></div>
+<div class="set"><div>Below top middle</div><select data-k="zone2" class="gsel"></select></div>
+<div class="set"><div>P1 label spot</div><select data-k="zone3" class="gsel"></select></div></div>
+<div class="card"><h2>Audio</h2>
+<div class="set"><div>Lower volume in reverse</div><input type="checkbox" class="sw" data-k="duck"></div>
+<div class="set"><div>Reduction (%)</div><input type="number" min="0" max="90" step="5" data-k="duckPct"></div></div>
+</section>
+</main>
+<div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const SEAT=[["forward","Forward"],["back","Back"],["up","Up"],["down","Down"],["tilt_up","Tilt up"],["tilt_down","Tilt down"],["backrest_forward","Backrest fwd"],["backrest_back","Backrest back"],["headrest_up","Headrest up"],["headrest_down","Headrest down"]];
+const GAUGES=["off","speed","rpm","coolant","ambient"];
+let lamps=[],busy=false,toastTimer;
+function toast(m,bad){const t=$("#toast");t.textContent=m;t.style.borderColor=bad?"var(--bad)":"var(--line)";t.classList.add("show");clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove("show"),2200)}
+async function post(path,params){try{const r=await fetch(path+"?"+new URLSearchParams(params),{method:"POST"});const j=await r.json();toast(j.msg,!j.ok);return j}catch(e){toast("No connection",true)}}
+$$("#tabs button").forEach(b=>b.onclick=()=>{$$("#tabs button,main section").forEach(x=>x.classList.remove("on"));b.classList.add("on");$("#"+b.dataset.t).classList.add("on");if(b.dataset.t=="settings")loadSettings()});
+$("#lockBtn").onclick=()=>post("/api/door",{act:"lock"});$("#unlockBtn").onclick=()=>post("/api/door",{act:"unlock"});
+$("#allOn").onclick=()=>post("/api/lamp",{id:"all",on:1});$("#allOff").onclick=()=>post("/api/lamp",{id:"all",on:0});
+$("#stopAll").onclick=()=>post("/api/stop",{});
+SEAT.forEach(([m,l])=>{const b=document.createElement("button");b.className="act";b.textContent=l;let timer;
+const go=()=>post("/api/seat",{move:m}),stop=()=>{clearInterval(timer);b.classList.remove("held")};
+b.onpointerdown=e=>{e.preventDefault();b.classList.add("held");go();timer=setInterval(go,1000)};
+["pointerup","pointerleave","pointercancel"].forEach(ev=>b.addEventListener(ev,stop));b.oncontextmenu=e=>e.preventDefault();$("#seat").append(b)});
+GAUGES.forEach(g=>$$(".gsel").forEach(s=>s.add(new Option(g=="off"?"Off":g[0].toUpperCase()+g.slice(1),g))));
+fetch("/api/lamps").then(r=>r.json()).then(l=>{lamps=l;l.forEach(x=>{const d=document.createElement("div");d.className="lamp";d.id="l_"+x.id;d.innerHTML="<span>"+x.label+"</span><input type=checkbox class=sw>";
+d.querySelector("input").onchange=e=>post("/api/lamp",{id:x.id,on:e.target.checked?1:0});$("#lamps").append(d)})});
+function pill(t,cls){return"<span class='pill "+(cls||"")+"'>"+t+"</span>"}
+const IGN={0:"Ignition off",1:"Accessory",3:"Ignition on",7:"Starting"};
+function tile(l,v,u){return"<div class=tile><span>"+l+"</span><b>"+v+(u&&v!="--"?" <small>"+u+"</small>":"")+"</b></div>"}
+function render(s){
+ $("#pills").innerHTML=pill(IGN[s.ign]||("Ign "+s.ign),s.ign?"on":"")+pill(s.lockKnown?(s.locked?"Locked":"Unlocked"):"Lock ?",s.locked?"on":"")+(s.reverse?pill("Reverse","warn"):"")+(s.hold?pill("Follow-me-home","warn"):"")+(s.speed>0?pill("Moving: controls locked","warn"):"");
+ s.lamps.split("").forEach((c,i)=>{if(!lamps[i])return;const d=$("#l_"+lamps[i].id);if(d){d.classList.toggle("on",c=="1");const k=d.querySelector("input");if(document.activeElement!==k)k.checked=c=="1"}});
+ $("#lampNote").textContent=s.lampsLeft?("Lamps switch off in "+s.lampsLeft+" s"):"Lamps switch off by themselves after 2 minutes.";
+ const n=(v,off)=>v==off?"--":v;
+ $("#tiles").innerHTML=tile("Speed",n(s.speed,-1),"km/h")+tile("RPM",n(s.rpm,-1),"")+tile("Coolant",n(s.coolant,-999),"°C")+tile("Outside",n(s.ambient,-999),"°C")+tile("Odometer",n(s.odo,-1),"km")+tile("Range",s.range.trim()||"--","")+tile("Consumption",s.cons.trim()||"--","")+tile("Average speed",s.avg.trim()||"--","");
+}
+async function poll(){if(busy)return;busy=true;try{const r=await fetch("/api/state");render(await r.json())}catch(e){$("#pills").innerHTML=pill("No connection","warn")}busy=false}
+async function loadSettings(){try{const s=await(await fetch("/api/settings")).json();
+$$("[data-k]").forEach(el=>{const k=el.dataset.k;let v=k.startsWith("zone")?s.zones[+k[4]]:s[k];if(el.type=="checkbox")el.checked=!!v;else el.value=v})}catch(e){}}
+$$("[data-k]").forEach(el=>el.onchange=()=>post("/api/set",{key:el.dataset.k,value:el.type=="checkbox"?(el.checked?1:0):el.value}));
+setInterval(poll,1000);poll();
+</script></body></html>)HTML";

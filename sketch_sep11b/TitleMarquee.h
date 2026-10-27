@@ -9,8 +9,9 @@ class TitleMarquee {
 public:
   static constexpr uint8_t WINDOW_WIDTH = 8;
   static constexpr uint8_t MAX_TEXT_LENGTH = 160;
-  static constexpr uint32_t STEP_MS = 300;
   static constexpr uint32_t EDGE_HOLD_MS = 1500;
+
+  void setStepMs(uint32_t newStepMs) { stepMs = newStepMs; }
 
   void setText(const char *newText) {
     strncpy(text, newText, MAX_TEXT_LENGTH - 1);
@@ -38,7 +39,7 @@ public:
     position = candidatePosition();
     needsSend = false;
     bool atEdge = position == 0 || position == lastPosition();
-    nextStepMs = nowMs + (atEdge ? EDGE_HOLD_MS : STEP_MS);
+    nextStepMs = nowMs + (atEdge ? EDGE_HOLD_MS : stepMs);
   }
 
 private:
@@ -47,6 +48,7 @@ private:
   uint8_t position = 0;
   bool needsSend = false;
   uint32_t nextStepMs = 0;
+  uint32_t stepMs = 300;
 
   uint8_t lastPosition() const { return length > WINDOW_WIDTH ? length - WINDOW_WIDTH : 0; }
 

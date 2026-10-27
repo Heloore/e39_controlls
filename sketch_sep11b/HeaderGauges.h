@@ -7,6 +7,7 @@
 
 // Gauges written into the navigation screen header zones (radio 68 -> 3B, A5 62 01 <zone> text).
 // Layout seen on this car: zone 1 top right under "P1", zone 5 top middle, zone 6 right below zone 5.
+// Zone 42 is the "P1" label at the top right (the radio draws it, we overwrite it).
 // The text appears immediately, no refresh frame needed.
 enum class HeaderGauge { Off, Speed, Rpm, Coolant, Ambient };
 
@@ -16,7 +17,7 @@ struct HeaderZone {
   HeaderGauge gauge;
 };
 
-constexpr uint8_t HEADER_ZONE_COUNT = 3;
+constexpr uint8_t HEADER_ZONE_COUNT = 4;
 constexpr uint8_t HEADER_TEXT_MAX_LENGTH = 12;
 
 inline bool headerGaugeFromName(const char *name, HeaderGauge &gauge) {
@@ -26,6 +27,16 @@ inline bool headerGaugeFromName(const char *name, HeaderGauge &gauge) {
   if (strcmp(name, "coolant") == 0) { gauge = HeaderGauge::Coolant; return true; }
   if (strcmp(name, "ambient") == 0) { gauge = HeaderGauge::Ambient; return true; }
   return false;
+}
+
+inline const char *headerGaugeName(HeaderGauge gauge) {
+  switch (gauge) {
+    case HeaderGauge::Speed:   return "speed";
+    case HeaderGauge::Rpm:     return "rpm";
+    case HeaderGauge::Coolant: return "coolant";
+    case HeaderGauge::Ambient: return "ambient";
+    default:                   return "off";
+  }
 }
 
 // Returns false while the value has not been received yet.
