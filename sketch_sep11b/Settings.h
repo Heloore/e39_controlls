@@ -56,6 +56,24 @@ inline void settingsLoad(Settings &s) {
   prefs.end();
 }
 
+// Wi-Fi and Bluetooth audio do not fit in memory together, so the ESP restarts into one or the other.
+// The request lasts for one boot: a power cycle always returns to Bluetooth audio.
+inline void settingsStoreWifiModeRequest(bool requested) {
+  Preferences prefs;
+  prefs.begin("e39", false);
+  prefs.putBool("wifiNext", requested);
+  prefs.end();
+}
+
+inline bool settingsTakeWifiModeRequest() {
+  Preferences prefs;
+  prefs.begin("e39", false);
+  bool requested = prefs.getBool("wifiNext", false);
+  if (requested) prefs.putBool("wifiNext", false);
+  prefs.end();
+  return requested;
+}
+
 inline void settingsSave(const Settings &s) {
   Preferences prefs;
   prefs.begin("e39", false);

@@ -59,6 +59,7 @@ bool trackDisplayEnabled = true; // serial "track off" disables
 bool radioShowsAux = false;
 bool gtMenuOpen = false; // GT shows its own menu: no header gauges, no title text
 TitleMarquee trackMarquee;
+bool wifiMode = false; // Wi-Fi mode: Bluetooth stays off, the web page is up
 volatile bool audioPlaying = false;
 volatile uint32_t audioStateChangedMs = 0;
 bool trackTextIsAux = false;   // what we want the screen line to say
@@ -118,6 +119,9 @@ int attenuationPercent = 30;
 bool reverseDuckingEnabled = true;
 
 unsigned long lastPlayPauseTime = 0;
+constexpr uint8_t MFL_RT_PRESS = 0x40;   // R/T button next to the cruise control; it sends no hold frame, so the hold is timed
+constexpr uint8_t MFL_RT_RELEASE = 0x00;
+uint32_t rtPressedMs = 0;                // 0: R/T is not held
 
 // Прототипы функций
 void onIbusFrame(const uint8_t *frame, uint8_t length);
@@ -158,10 +162,37 @@ void applySettings();
 void webControlBegin();
 void updateWebControl();
 bool handleWifiCommand(const char *arguments);
+void requestWifiMode(bool enable);
 
 // ============================================================
 // SETUP
 // ============================================================
+
+void startBluetoothAudio() {
+  a2dp_sink.set_on_connection_state_changed(
+    [](esp_a2d_connection_state_t state, void *) {
+      Serial.print("BT connection state: ");
+      Serial.println((int)state);
+    }
+  );
+
+  a2dp_sink.set_on_audio_state_changed(
+    [](esp_a2d_audio_state_t state, void *) {
+      Serial.print("AUDIO state: ");
+      Serial.println((int)state);
+      audioPlaying = (state == ESP_A2D_AUDIO_STATE_STARTED);
+      audioStateChangedMs = millis();
+    }
+  );
+
+  a2dp_sink.set_avrc_metadata_attribute_mask(ESP_AVRC_MD_ATTR_TITLE | ESP_AVRC_MD_ATTR_ARTIST);
+  a2dp_sink.set_avrc_metadata_callback(onTrackMetadata);
+
+  a2dp_sink.set_auto_reconnect(true, 1000);
+  a2dp_sink.start("E39 Bluetooth");
+  Serial.println("A2DP STARTED");
+  Serial.printf("HEAP: after Bluetooth %u\n", (unsigned)ESP.getFreeHeap());
+}
 
 void setup() {
 
@@ -173,6 +204,9 @@ void setup() {
   Serial.println(" BMW E39 Bluetooth + PCM5102A + I-BUS");
   Serial.println(" Mode: RX + safe TX (inverted, idle check)");
   Serial.println("=============================================");
+
+  wifiMode = settingsTakeWifiModeRequest();
+  Serial.println(wifiMode ? "WI-FI MODE: Bluetooth stays off" : "BLUETOOTH AUDIO MODE");
 
   // ==========================================================
   // I2S
@@ -197,28 +231,12 @@ void setup() {
   // BLUETOOTH A2DP
   // ==========================================================
 
-  a2dp_sink.set_on_connection_state_changed(
-    [](esp_a2d_connection_state_t state, void *) {
-      Serial.print("BT connection state: ");
-      Serial.println((int)state);
-    }
-  );
-
-  a2dp_sink.set_on_audio_state_changed(
-    [](esp_a2d_audio_state_t state, void *) {
-      Serial.print("AUDIO state: ");
-      Serial.println((int)state);
-      audioPlaying = (state == ESP_A2D_AUDIO_STATE_STARTED);
-      audioStateChangedMs = millis();
-    }
-  );
-
-  a2dp_sink.set_avrc_metadata_attribute_mask(ESP_AVRC_MD_ATTR_TITLE | ESP_AVRC_MD_ATTR_ARTIST);
-  a2dp_sink.set_avrc_metadata_callback(onTrackMetadata);
-
-  a2dp_sink.set_auto_reconnect(true, 1000);
-  a2dp_sink.start("E39 Bluetooth");
-  Serial.println("A2DP STARTED");
+  if (wifiMode) {
+    audioPlaying = true; // the nav screen then shows the title below instead of AUX
+    strncpy(trackTitle, "WIFI MODE - HOLD R/T TO EXIT", sizeof(trackTitle) - 1);
+  } else {
+    startBluetoothAudio();
+  }
 
   // ==========================================================
   // I-BUS UART (RX normal, TX inverted for 2N7000)
@@ -400,6 +418,15 @@ void handleMflCommand(const uint8_t *frame, uint8_t length) {
 
   if (frame[3] == 0x3B) {
     uint8_t buttonCode = frame[4];
+
+    if (buttonCode == MFL_RT_PRESS) {
+      rtPressedMs = millis();
+      return;
+    }
+    if (buttonCode == MFL_RT_RELEASE) {
+      rtPressedMs = 0;
+      return;
+    }
 
     if (!a2dp_sink.is_connected()) {
       return;

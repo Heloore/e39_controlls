@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""Serves the ESP32 web page (from sketch_sep11b/WebPage.h) with a fake car behind it.
+"""Serves the ESP32 web page (from tools/web_page.html) with a fake car behind it.
 
 Run:  python3 tools/mock_web_server.py   then open http://localhost:8080
 Test the "car is moving" lock with:  http://localhost:8080/mock/moving?on=1  (and on=0 to stop)
 """
 import json
-import re
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-SKETCH = Path(__file__).resolve().parent.parent / "sketch_sep11b"
 LAMPS = [
     ("low_left", "Low beam, driver"), ("low_right", "Low beam, passenger"),
     ("fog_left", "Fog light, driver"), ("fog_right", "Fog light, passenger"),
@@ -32,8 +30,7 @@ settings = {"unlock": 1, "unlockAny": 0, "lowbeam": 1, "lbSec": 60, "track": 1, 
 
 
 def load_page():
-    text = (SKETCH / "WebPage.h").read_text()
-    return re.search(r'R"HTML\((.*)\)HTML"', text, re.S).group(1)
+    return (Path(__file__).resolve().parent / "web_page.html").read_text()
 
 
 def state():
@@ -109,6 +106,8 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/api/stop":
             car["lamps"].clear()
             self.result(True, "Stopped")
+        elif url.path == "/api/exit":
+            self.result(True, "Restarting into Bluetooth audio")
         elif url.path == "/api/set":
             key, value = args.get("key", ""), args.get("value", "")
             if key.startswith("zone"):

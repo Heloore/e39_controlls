@@ -1,4 +1,5 @@
-// Web interface: own Wi-Fi network (only while parked), one page with Control, Monitor and Settings.
+// Web interface: own Wi-Fi network in Wi-Fi mode (Bluetooth off, only while parked), one page with Control, Monitor and Settings.
+// Hold R/T on the steering wheel (or serial "wifi on" / "wifi off") to switch; it restarts the ESP.
 // This file shares all globals with sketch_sep11b.ino.
 
 #include <WiFi.h>
@@ -9,11 +10,18 @@ constexpr char WIFI_SSID[] = "E39-Controls";
 constexpr uint32_t WIFI_MOVING_GRACE_MS = 3000;   // keep the network up this long after the car starts moving
 constexpr uint8_t WIFI_MOVING_SPEED_KMH = 5;
 constexpr uint8_t WIFI_PASSWORD_MIN_LENGTH = 8;
+constexpr uint8_t WIFI_CHANNEL = 1;
+constexpr uint8_t WIFI_MAX_CLIENTS = 2;           // fewer stations, less heap
+constexpr uint32_t WIFI_START_RETRY_MS = 5000;
+constexpr uint32_t RT_HOLD_MS = 1500;             // hold R/T this long to switch mode
+constexpr uint32_t RESTART_DELAY_MS = 600;        // lets the last HTTP answer leave first
 
 WebServer webServer(80);
-bool wifiAllowed = true;      // serial "wifi off" keeps the network down
 bool wifiUp = false;
+bool wifiStartTried = false;
+uint32_t wifiStartTriedMs = 0;
 uint32_t wifiMovingSinceMs = 0;
+uint32_t restartAtMs = 0;     // 0: no restart scheduled
 char responseBuffer[1200];
 
 // ---------------------------------------------------------------------------
@@ -90,7 +98,13 @@ const char *changeSetting(const char *key, const char *value) {
 // ---------------------------------------------------------------------------
 
 void handleRoot() {
-  webServer.send_P(200, "text/html", WEB_PAGE);
+  webServer.sendHeader("Content-Encoding", "gzip");
+  webServer.setContentLength(WEB_PAGE_GZ_LENGTH);
+  webServer.send(200, "text/html", "");
+  errno = 0;
+  size_t sentLength = webServer.client().write_P((PGM_P)WEB_PAGE_GZ, WEB_PAGE_GZ_LENGTH);
+  Serial.printf("WIFI: page %u of %u bytes sent, errno %d, free heap %u\n", (unsigned)sentLength,
+                (unsigned)WEB_PAGE_GZ_LENGTH, errno, (unsigned)ESP.getFreeHeap());
 }
 
 void handleLamps() {
@@ -205,22 +219,56 @@ void handleStopAll() {
   sendResult(true, "Stopped");
 }
 
+void handleExitWifiMode() {
+  sendResult(true, "Restarting into Bluetooth audio");
+  requestWifiMode(false);
+}
+
 // ---------------------------------------------------------------------------
-// Wi-Fi network: only while parked, only with a password set over serial ("wifi pass <text>")
+// Mode switch: Bluetooth audio or Wi-Fi mode, each needs a restart (they do not fit in memory together)
+// ---------------------------------------------------------------------------
+
+void scheduleRestart(bool intoWifiMode) {
+  if (restartAtMs != 0) return;
+  settingsStoreWifiModeRequest(intoWifiMode);
+  restartAtMs = millis() + RESTART_DELAY_MS;
+  if (restartAtMs == 0) restartAtMs = 1;
+}
+
+void requestWifiMode(bool enable) {
+  if (enable == wifiMode) return;
+
+  if (enable && strlen(settings.wifiPassword) < WIFI_PASSWORD_MIN_LENGTH) {
+    Serial.println("WIFI: set a password first. Type: wifi pass <8+ characters>");
+    return;
+  }
+  if (enable && isCarMoving()) {
+    Serial.println("WIFI: refused, the car is moving");
+    return;
+  }
+
+  Serial.println(enable ? "WIFI: restarting into Wi-Fi mode (Bluetooth off)" : "WIFI: restarting into Bluetooth audio");
+  scheduleRestart(enable);
+}
+
+// ---------------------------------------------------------------------------
+// Wi-Fi network: only in Wi-Fi mode, only while parked, password set over serial ("wifi pass <text>")
 // ---------------------------------------------------------------------------
 
 void startWifi() {
   if (strlen(settings.wifiPassword) < WIFI_PASSWORD_MIN_LENGTH) return;
 
+  Serial.printf("HEAP: before Wi-Fi %u\n", (unsigned)ESP.getFreeHeap());
   WiFi.mode(WIFI_AP);
-  if (!WiFi.softAP(WIFI_SSID, settings.wifiPassword)) {
+  if (!WiFi.softAP(WIFI_SSID, settings.wifiPassword, WIFI_CHANNEL, 0, WIFI_MAX_CLIENTS)) {
     Serial.println("WIFI: could not start the access point");
     WiFi.mode(WIFI_OFF);
     return;
   }
   webServer.begin();
   wifiUp = true;
-  Serial.printf("WIFI: network '%s' is up, open http://%s\n", WIFI_SSID, WiFi.softAPIP().toString().c_str());
+  Serial.printf("WIFI: network '%s' is up, open http://%s (free heap %u)\n", WIFI_SSID,
+                WiFi.softAPIP().toString().c_str(), (unsigned)ESP.getFreeHeap());
 }
 
 void stopWifi() {
@@ -241,28 +289,49 @@ void webControlBegin() {
   webServer.on("/api/seat", HTTP_POST, handleSeat);
   webServer.on("/api/lamp", HTTP_POST, handleLamp);
   webServer.on("/api/stop", HTTP_POST, handleStopAll);
+  webServer.on("/api/exit", HTTP_POST, handleExitWifiMode);
 
   if (strlen(settings.wifiPassword) < WIFI_PASSWORD_MIN_LENGTH) {
-    Serial.println("WIFI: no password set, the network stays off. Type: wifi pass <8+ characters>");
+    Serial.println("WIFI: no password set, Wi-Fi mode is unavailable. Type: wifi pass <8+ characters>");
+  } else if (!wifiMode) {
+    Serial.println("WIFI: hold R/T on the steering wheel (or type 'wifi on') for the web page; Bluetooth is off there");
   }
 }
 
+void updateRtHold() {
+  if (rtPressedMs == 0 || millis() - rtPressedMs < RT_HOLD_MS) return;
+  rtPressedMs = 0;
+  requestWifiMode(!wifiMode);
+}
+
 void updateWebControl() {
+  updateRtHold();
   uint32_t nowMs = millis();
+
+  if (restartAtMs != 0 && (int32_t)(nowMs - restartAtMs) >= 0) {
+    Serial.flush();
+    ESP.restart();
+  }
+  if (!wifiMode) return;
 
   bool movingFast = carGauges.hasSpeedRpm && carGauges.speedKmh >= WIFI_MOVING_SPEED_KMH;
   if (!movingFast) wifiMovingSinceMs = 0;
   else if (wifiMovingSinceMs == 0) wifiMovingSinceMs = nowMs;
-  bool parked = !movingFast || (nowMs - wifiMovingSinceMs < WIFI_MOVING_GRACE_MS);
+  if (movingFast && nowMs - wifiMovingSinceMs >= WIFI_MOVING_GRACE_MS) {
+    requestWifiMode(false);
+    return;
+  }
 
-  bool wanted = wifiAllowed && parked && strlen(settings.wifiPassword) >= WIFI_PASSWORD_MIN_LENGTH;
-  if (wanted && !wifiUp) startWifi();
-  else if (!wanted && wifiUp) stopWifi();
-
+  if (!wifiUp && (!wifiStartTried || nowMs - wifiStartTriedMs >= WIFI_START_RETRY_MS)) {
+    wifiStartTried = true;
+    wifiStartTriedMs = nowMs;
+    startWifi();
+  }
   if (wifiUp) webServer.handleClient();
 }
 
-// "wifi on|off" switch the network, "wifi pass <8+ characters>" sets the password, "wifi" shows the status
+// "wifi on" restarts into Wi-Fi mode, "wifi off" back to Bluetooth audio, "wifi pass <8+ characters>" sets the password,
+// "wifi" shows the status
 bool handleWifiCommand(const char *arguments) {
   while (*arguments == ' ') arguments++;
 
@@ -277,11 +346,13 @@ bool handleWifiCommand(const char *arguments) {
     if (wifiUp) stopWifi();
     Serial.println("WIFI: password saved");
   } else if (strcmp(arguments, "on") == 0) {
-    wifiAllowed = true;
+    requestWifiMode(true);
   } else if (strcmp(arguments, "off") == 0) {
-    wifiAllowed = false;
+    requestWifiMode(false);
   }
-  Serial.printf("WIFI: %s, %s, password %s\n", wifiUp ? "up" : "down", wifiAllowed ? "allowed" : "switched off",
-                strlen(settings.wifiPassword) >= WIFI_PASSWORD_MIN_LENGTH ? "set" : "NOT set");
+  Serial.printf("WIFI: %s, network %s, password %s, free heap %u (lowest %u)\n",
+                wifiMode ? "Wi-Fi mode (Bluetooth off)" : "Bluetooth audio mode", wifiUp ? "up" : "down",
+                strlen(settings.wifiPassword) >= WIFI_PASSWORD_MIN_LENGTH ? "set" : "NOT set",
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap());
   return true;
 }
