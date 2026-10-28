@@ -47,7 +47,12 @@ Legend: **[ready]** we know enough to build it, **[scan]** needs lamp/job discov
 - **Welcome, goodbye, follow-me-home lights, by key fob** [scan]
   - Triggers: fob unlock = `00 04 BF 72 22`, fob lock = `00 04 BF 72 10`.
   - Welcome: all front lights in sequence. Goodbye: angel eyes flash twice. Follow-me-home: low beams for 1 minute (already built on ignition off; add the fob variant).
-  - Missing lamps: angel eyes / driver side marker, high beams, rear driver lamps, brake lights. Scan bytes 0, 1, 3, 4, 8, 11 and byte 2 bits 6-7.
+  - Missing lamps: angel eyes / driver side marker, high beams, rear driver lamps, brake lights.
+  - Lamp scan so far (2026-10-28): one test at a time with `python3 tools/lamp_test.py <data byte> <mask hex> [sec]`, Igor says what lit, then the next. Byte 1 latches the hazards, switch them off by button.
+    - Nothing: byte 0, byte 11, byte 2 bits 1-2, byte 7 bits 2/3/5, byte 3 bits 0-2 and 5-7.
+    - Byte 3 bits 3 and 4: low beams + interior buttons + angel eyes (one "lights on" function).
+    - Byte 1 (all bits): high beams ~5 s + hazards. Byte 4 (all): high beams + something red at the rear. Byte 6 bits 0-5: passenger angel eye. Byte 8 (all): low beams + buttons, flashing.
+    - Next: single bits of byte 6 (0-5), byte 1, byte 4 (look at the rear to name the red lamp), byte 8.
 - **BlueBus-like interface** [research]
   - Own menu on the nav screen (BlueBus `ui/bmbt.c`). The fork session started on this: text zones `A5 62`, `21 60/61/62` index writes, GT menu detection.
 - **Custom 2.1" gauge integration** [hardware]
@@ -69,3 +74,4 @@ Legend: **[ready]** we know enough to build it, **[scan]** needs lamp/job discov
 - Fuel level as range only; no raw fuel value found.
 - Re-use the E39 job map for unlock-only job (`43`/`42`) instead of the toggle (`14`).
 - Seat "easy entry" memory slots (stored pulse counts).
+- Passenger seat: electric, no memory. Job `15` params `0A`-`12` only click the driver headrest (`0D`); the GM job scan `00-77` only moved the driver seat. Probably not on the bus (motors on direct switches), so it would need relays/motor drivers: not planned.
